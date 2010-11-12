@@ -89,7 +89,7 @@
 __all__ = ["StatsKey", "StatsQuant", "StatsByteTiming",
            "StatsData", "LogAnalyser"]
 
-import os, re
+import os, re, sys
 from Analytics.Debug import debug
 from Analytics.IPInfo import IPResolver
 from multiprocessing import Process, Queue, cpu_count
@@ -200,7 +200,11 @@ class StatsQuant:
   @property
   def rms(self):
     if self.num:
-      return sqrt(self.sum2 / self.num - self.avg ** 2)
+      try:
+        return sqrt(self.sum2 / self.num - self.avg ** 2)
+      except ValueError, e:
+	print >> sys.stderr, "*** RMS error (%s), s=%.17f s2=%.17f num=%.17f avg=%.17f term=%.17f" % (str(e), self.sum, self.sum2, self.num, self.avg, self.sum2 / self.num - self.avg ** 2)
+        return -1.
     else:
       return 0.
 
