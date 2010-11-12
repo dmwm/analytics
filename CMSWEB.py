@@ -22,12 +22,12 @@ MONTH = { "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
 
 The log parsing spends much time in regexp matching, so avoid costly
 constructs in this regexp, especially unnecessary backtracking and
-match groups. This is the reason RXLOG does not attempt to match
-'HTTP/n.m' at the end of the request line: attempting to match all
-attack and malformed requests would more than double the log parsing
-time. Hence the suffix is matched manually in cmsweb_parser."""
+match groups. This is the reason RXLOG does not attempt to match the
+leading HTTP method and trailing 'HTTP/n.m' in the request line:
+attempting to match all attack and malformed requests would more than
+double the log parsing time. Hence these are matched manually."""
 RXLOG = re.compile(r"^\[(\d\d/\w{3}/\d{4}:\d\d:\d\d:\d\d) ([-+]\d{4})\]"
-                   r" \S+ (\S+) \"([A-Z]+) (.*)\" (\d+)"
+                   r" \S+ (\S+) \"(.*?)\" (\d+)"
                    r" \[data: (?:\d+|-) in (\d+) out (?:\d+|-) body (\d+) us \]"
                    r" \[auth: \S+ \S+ \"([^\"]*)\" .* \]"
                    r" \[ref: \".*?\" \"(.*)\" \]$")
@@ -192,7 +192,7 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
 
   # Read log entries.
   for row in rows:
-    (date, tz, ip, method, uri, code, bytes, usecs, user, browser) = row
+    (date, tz, ip, uri, code, bytes, usecs, user, browser) = row
 
     # Request new IPs to be resolved on background.
     if ip not in _seenip:
@@ -202,13 +202,27 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
         qresolver.put(newip)
         newip = set()
 
+    # Locate HTTP method. It should be the first word on the line.
+    # Some attacks feed complete junk, so auto-classlify as attack
+    # if it doesn't look like a valid HTTP request.
+    key = None
+    uribeg = 0
+    uriend = len(uri)
+    uripart = uri.find(" ")
+    method = uri[0:uripart]
+    if not method.isupper():
+      key = StatsKey("attacks", "N/A", "N/A", uri)
+    else:
+      uribeg = uripart+1
+
     # Remove trailing " HTTP/n.m" from the URI. Some attacks make
     # malformed requests without the required HTTP/n.m part. Making
     # RXLOG match it optionally significantly slows down log pattern
     # matching, so handle it manually here.
-    uriend = len(uri)
     if uriend > 9 and uri.find(" HTTP/", uriend-9, uriend-3) >= 0:
       uriend -= 9
+    else:
+      key = StatsKey("attacks", "N/A", "N/A", uri)
 
     # Resolve log time.
     #
@@ -239,20 +253,21 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
       debug("CMSWEB", 2, "new browser %s from %s", newname, browser)
     browser = _browsermap[browser]
 
-    # Map URI to service, instance, subclass and API call.
-    key = None
-    for rx, nsvc, ninst, nclass, napi in URI2SVC:
-      m = rx.match(uri, 0, uriend)
-      if m:
-        key = StatsKey(service = expand(m, nsvc, "Other"),
-                       instance = expand(m, ninst, "N/A"),
-                       subclass = expand(m, nclass, "N/A"),
-                       api = expand(m, napi))
-        break
+    # Map URI to service, instance, subclass and API call, provided
+    # we didn't already classify this as a bad request attack.
+    if key == None:
+      for rx, nsvc, ninst, nclass, napi in URI2SVC:
+        m = rx.match(uri, uribeg, uriend)
+        if m:
+          key = StatsKey(service = expand(m, nsvc, "Other"),
+                         instance = expand(m, ninst, "N/A"),
+                         subclass = expand(m, nclass, "N/A"),
+                         api = expand(m, napi))
+          break
 
     if key == None:
       key = StatsKey(service = "other", instance = "N/A", subclass = "N/A",
-                     api = re.sub(r"\?.*", "", uri[:uriend]))
+                     api = re.sub(r"\?.*", "", uri[uribeg:uriend]))
 
     # Tick the stats.
     timebin = strftime(time_format, gmtime(t))
