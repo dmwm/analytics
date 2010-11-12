@@ -517,7 +517,7 @@ class IPResolver:
     self.ipaddrs = {}
     self.resstat = {}
     for cidr in self.UNAVAILABLE.iter_cidrs():
-      asn = "AS#%s" % str(cidr)
+      asn = "@%s" % str(cidr)
       self.asnmap[asn] = ASInfo(asn = asn, cc = "--")
     debug("IP2INFO", 1, "initialisation complete %.2f", time() - now)
 
