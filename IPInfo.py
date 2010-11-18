@@ -977,7 +977,7 @@ class IPResolver:
   def _wild_lookup(self, info, task, tasks):
     """For addresses we have failed to reverse lookup, and failed to
     reverse lookup CIDR base address, try other addresses in the same
-    CIDR block. If the CIDR is narrower than /18, scan it entirely,
+    CIDR block. If the CIDR is narrower than /24, scan it entirely,
     and otherwise scan the nearest /24 segment. Remember which ever
     name we first come up with."""
     if info.domain or info.hostname or info.cidrhost or info.wildhost:
@@ -996,7 +996,7 @@ class IPResolver:
                 info.ip, info.wildhost)
 
     # FIXME: Handle IPv6 here.
-    cidrw = (info.cidr.prefixlen > 18 and info.cidr.prefixlen) or 24
+    cidrw = (info.cidr.prefixlen >= 24 and info.cidr.prefixlen) or 25
     for xip in IPNetwork("%s/%d" % (info.ip, cidrw)):
       self._submit_ptr(responder, xip, rr.PTRraw)
     return False
