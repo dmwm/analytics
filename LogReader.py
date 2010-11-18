@@ -846,6 +846,7 @@ class LogAggregator(Process):
 
   def _save_json(self, timebins, svckeys, stats, statdir):
     debug("LOGREADER", 1, "saving json summary")
+    strings = {}
 
     def maxcnt(timebin, svc):
       if timebin == "TOTAL" and svc.service == "ALL":
@@ -854,6 +855,14 @@ class LogAggregator(Process):
         return 25
       else:
         return 10
+
+    def mkstr(s):
+      if s in strings:
+        return strings[s]
+      else:
+        id = len(strings)
+        strings[s] = id
+        return id
 
     def slice(vals, nmax):
       items = sorted(vals.items(), reverse=True, key=lambda kv: kv[1].timing.num)
@@ -868,65 +877,95 @@ class LogAggregator(Process):
       return result
 
     def format_quant(q):
-      return ('{ "num": %.3f, "sum": %.3f, "sum2": %.3f, "min": %.3f, "max": %.3f }'
+      return ('[%.3f,%.3f,%.3f,%.3f,%.3f]'
               % (q.num, q.sum, q.sum2, q.min, q.max))
 
-    def format_list(vals, nmax):
-      return ", ".join('{ "item": "%s", "nreq": %d, "timing": %s, "kbytes": %s }' %
-                       ((k == "-" and "(Unidentified)" or k), v.timing.num,
-			format_quant(v.timing), format_quant(v.bytes))
-		       for k, v in slice(vals, nmax))
+    def format_list(vals, nmax, pad):
+      return (",\n" + pad).join('[%d,%d,%s,%s]' %
+                                (mkstr(k == "-" and "(Unidentified)" or k),
+			         v.timing.num,
+			         format_quant(v.timing),
+			         format_quant(v.bytes))
+		                for k, v in slice(vals, nmax))
 
     def format_svc(s):
-      return '"service": "%s", "instance": "%s", "subclass": "%s", "api": "%s"' % s
+      return '%d,%d,%d,%d' % (mkstr(s.service), mkstr(s.instance),
+                              mkstr(s.subclass), mkstr(s.api))
 
-    def format_val(v, nmax):
-      return ('"nreq": %d, "total": { "timing": %s, "kbytes": %s }, "hmethod": [%s],'
-	      ' "hcode": [%s], "user": [%s], "browser": [%s], "ip": [%s],'
-              ' "host": [%s], "domain": [%s], "country": [%s], "location": [%s]' %
-              (v.total.timing.num,             format_quant(v.total.timing),
-	       format_quant(v.total.bytes),    format_list(v.methods, nmax),
-	       format_list(v.codes, nmax),     format_list(v.users, nmax),
-	       format_list(v.browsers, nmax),  format_list(v.ips, nmax),
-	       format_list(v.hosts, nmax),     format_list(v.domains, nmax),
-	       format_list(v.countries, nmax), format_list(v.locations, nmax)))
+    def format_columns():
+      return ('"nreq","total","hmethod","hcode","user","browser"'
+	      ',"ip","host","domain","country","location"')
+
+    def format_val(v, nmax, pad):
+      lpad = pad + " "
+      return (('%d,[%s,%s]' + (',\n' + pad + '[%s]') * 9) %
+              (v.total.timing.num,
+               format_quant(v.total.timing),
+	       format_quant(v.total.bytes),
+               format_list(v.methods, nmax, lpad),
+	       format_list(v.codes, nmax, lpad),
+	       format_list(v.users, nmax, lpad),
+	       format_list(v.browsers, nmax, lpad),
+	       format_list(v.ips, nmax, lpad),
+	       format_list(v.hosts, nmax, lpad),
+	       format_list(v.domains, nmax, lpad),
+	       format_list(v.countries, nmax, lpad),
+               format_list(v.locations, nmax, lpad)))
 
     # Output overall summary for each time bin.
-    result = gzopen("%s-json/summary.txt.gz" % statdir, "wb", 9)
-    result.write('{ "data": [\n')
+    strings = {}
+    result = open("%s-json/summary.txt" % statdir, "wb")
+    result.write('{"data":[\n')
     for timebin in timebins:
-      result.write('  { "bin": "%s", "items": [\n' % timebin)
-      result.writelines('     { "service": "%s", %s },\n' %
-		        (svc.service,
-			 format_val(stats[timebin][svc], maxcnt(timebin, svc)))
-			for svc in svckeys
-                        if stats[timebin][svc].total.timing.num != 0)
-      result.write("  ]},\n")
+      result.write('{"bin":"%s","items":[\n' % timebin)
+      result.write(',\n'.join
+		   ('[%d,%s]' %
+		    (mkstr(svc.service),
+		     format_val(stats[timebin][svc],
+				maxcnt(timebin, svc),
+				" "))
+                    for svc in svckeys
+                    if stats[timebin][svc].total.timing.num != 0))
+      result.write(']}')
+      if timebin != timebins[-1]:
+        result.write(",")
+      result.write('\n')
+    result.write('],"columns":["service",%s],"strings":[\n' % format_columns())
+    result.write(',\n'.join
+		 ('"%s"' % s for id, s in
+	          sorted(zip(strings.values(), strings.keys()))))
     result.write("]}\n")
     result.close()
 
     # Output per-timebin detailed files, including one for "TOTAL".
-    pad = " " * 9
     for timebin in timebins:
-      result = gzopen("%s-json/%s.txt.gz" % (statdir, timebin), "wb", 9)
-      result.write('{ "data": [\n')
-      result.write('  { "bin": "%s", "items": [\n' % timebin)
-      for svc in svckeys:
-        if stats[timebin][svc].total.timing.num != 0:
-          result.write('     { "service": "%s", %s, "details": [\n'
-		       % (svc.service,
-			  format_val(stats[timebin][svc], maxcnt(timebin, svc))))
-          items = sorted(((s, v) for s, v in stats[timebin].iteritems()
-                          if s.service == svc.service and s not in svckeys),
-                         key = lambda sv: sv[1].total.timing.num,
-                         reverse = True)
+      strings = {}
+      result = open("%s-json/%s.txt" % (statdir, timebin), "wb")
+      result.write('{"data":[\n')
+      result.write('{"bin":"%s","items":[\n' % timebin)
+      skeys = [s for s in svckeys if stats[timebin][s].total.timing.num != 0]
+      for svc in skeys:
+        result.write('[%d,%s,[\n'
+		     % (mkstr(svc.service),
+			format_val(stats[timebin][svc], maxcnt(timebin, svc), " ")))
 
-          result.write(",\n".join
-		       ("%s{ %s, %s }" %
-			(pad, format_svc(s), format_val(v, maxcnt(timebin, s)))
-                        for s, v in items))
-          result.write(pad[:-2] + "]},\n")
-      result.write("  ]}\n")
+        items = sorted(((s, v) for s, v in stats[timebin].iteritems()
+                        if s.service == svc.service and s not in svckeys),
+                       key = lambda sv: sv[1].total.timing.num,
+                       reverse = True)
+
+        result.write(',\n'.join
+		     ("  [%s,%s]" %
+		      (format_svc(s), format_val(v, maxcnt(timebin, s), "   "))
+                      for s, v in items))
+        result.write(" ]]")
+        if svc != skeys[-1]:
+          result.write(",")
+        result.write("\n")
+      result.write(']}],"columns":["service",%s,"detail"],"strings":[\n' % format_columns())
+      result.write(',\n'.join
+                   ('"%s"' % s for id, s in
+	            sorted(zip(strings.values(), strings.keys()))))
       result.write("]}\n")
       result.close()
 
