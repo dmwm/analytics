@@ -1072,7 +1072,7 @@ class LogAnalyser:
           month = nextmonth = int(m.group(3))
           if month == 12:
             nextyear = year + 1
-            month = 1
+            nextmonth = 1
           else:
             nextmonth = month + 1
 
