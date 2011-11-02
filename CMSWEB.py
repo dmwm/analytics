@@ -28,7 +28,7 @@ attempting to match all attack and malformed requests would more than
 double the log parsing time. Hence these are matched manually."""
 RXLOG = re.compile(r"^\[(\d\d/\w{3}/\d{4}:\d\d:\d\d:\d\d) ([-+]\d{4})\]"
                    r" \S+ (\S+) \"(.*?)\" (\d+)"
-                   r" \[data: (?:\d+|-) in (\d+) out (?:\d+|-) body (\d+) us \]"
+                   r" \[data: (?:\d+|-) in (\d+) out (?:\d+|-) body (-?\d+) us \]"
                    r" \[auth: \S+ \S+ \"([^\"]*)\" .* \]"
                    r" \[ref: \".*?\" \"(.*)\" \]$")
 
@@ -269,7 +269,7 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
       key = StatsKey(service = "other", instance = "N/A", subclass = "N/A",
                      api = re.sub(r"\?.*", "", uri[uribeg:uriend]))
 
-    # Tick the stats.
+    # Create time bin if necessary.
     timebin = strftime(time_format, gmtime(t))
     if timebin not in stats:
       stats[timebin] = {}
@@ -277,7 +277,17 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     if key not in stats[timebin]:
       stats[timebin][key] = StatsData()
 
+    # If reported time stats are negative, flip it to positive. This is
+    # pretty much completely bogus, but works better than ignoring the
+    # entry entirely - these happen relatively rarely on virtual machines
+    # when time keeping breaks down, for example during IRQ storms.
+    usecs = float(usecs) * 1e-3
+    if usecs < 0: usecs = -usecs
+
+    # Convert proxies to real users.
     user = user.replace("/CN=proxy", "")
+
+    # Tick the stats.
     stats[timebin][key].tick(float(bytes) / 1024,
                              float(usecs) * 1e-3,
                              method, code, user, browser, ip,
