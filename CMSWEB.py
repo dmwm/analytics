@@ -277,6 +277,7 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     if key not in stats[timebin]:
       stats[timebin][key] = StatsData()
 
+    user = user.replace("/CN=proxy", "")
     stats[timebin][key].tick(float(bytes) / 1024,
                              float(usecs) * 1e-3,
                              method, code, user, browser, ip,
