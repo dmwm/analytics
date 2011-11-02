@@ -111,9 +111,9 @@ URI2SVC = [
    ('rewrite', 4,
     (re.compile(r"^/[^/]+\.[a-z]+$"), "/*.*"))),
 
-  (re.compile(r"((/(?:base|conddb|crabconf|prod-?mon|prodrequest"
-              r"|das|dbs_discovery|filemover|sitedb|T0Mon))"
-              r"(?:[-a-z0-9_]*))($|/[^?&]*)"),
+  (re.compile(r"((/(?:auth|base|conddb|crabconf|prod-?mon|prodrequest"
+              r"|couchdb|das|dbs(?:_discovery)?|filemover|sitedb|reqmgr"
+              r"|T0Mon|tier0|workqueue))(?:[-a-z0-9_]*))($|/[^?&]*)"),
    ('rewrite', 2, (re.compile(r"/prod[-a-z]+"), "/prodtools")),
    1, None,
    ('rewrite', 3,
