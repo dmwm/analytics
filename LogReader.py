@@ -203,8 +203,13 @@ class StatsQuant:
       try:
         return sqrt(self.sum2 / self.num - self.avg ** 2)
       except ValueError, e:
-	print >> sys.stderr, "*** RMS error (%s), s=%.17f s2=%.17f num=%.17f avg=%.17f term=%.17f" % (str(e), self.sum, self.sum2, self.num, self.avg, self.sum2 / self.num - self.avg ** 2)
-        return -1.
+        # Numerical errors which occur with narrow distribution.  In
+        # practice the term under sqrt() frequently becomes -0, or very
+        # close to it within numerical precision. Suppress to zero.
+        # print >> sys.stderr, "*** RMS error (%s), s=%.17f s2=%.17f" \
+        #   " num=%.17f avg=%.17f term=%.17f" % (str(e), self.sum, self.sum2,
+        #    self.num, self.avg, self.sum2 / self.num - self.avg ** 2)
+        return 0.
     else:
       return 0.
 
