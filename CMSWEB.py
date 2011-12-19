@@ -288,8 +288,7 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     user = user.replace("/CN=proxy", "")
 
     # Tick the stats.
-    stats[timebin][key].tick(float(bytes) / 1024,
-                             float(usecs) * 1e-3,
+    stats[timebin][key].tick(float(bytes) / 1024, usecs,
                              method, code, user, browser, ip,
                              None, None, None, None)
 
