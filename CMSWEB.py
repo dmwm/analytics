@@ -134,8 +134,12 @@ URI2SVC = [
   (re.compile(r"(/(?:$|(?:favicon|index|robots)\.[a-z]+$|img/|css/))"),
    "static-content", None, None, 1),
 
-  (re.compile(r"((?:HTTP|[a-z]+[.:]|//?(?:admin|mysql|sql|pma|[a-z.]*w00t)|"
-              r"/\?|.*/php|.*\.php|.*/(?:cgi-bin|soap)).*)"),
+  (re.compile(r"([^/]|//?(?:[^A-Za-z]|afs|[-0-9A-Za-z_]*[`'\\\"_.:%@~?]|awstats|"
+              r"[a-z]*sql|pma|PMA|[a-z.]*w00t|[A-Za-z]*[Aa]dmin|coldfusion|horde|"
+              r"[-a-z]*console|etc|tmp|[a-z]*wiki|webalizer|wordpress|wp-[a-z]*|www|"
+              r"xalan|xerces|x[ms]l|f?cgi|.*/(?:my|MY)?(?:php|PHP|CHANGES|README)|"
+              r".*\.(?:php|pl|pm|py|nasl|dll|exe|ini|[bd]at|idx|inc|[aj]sp|f?cgi|"
+              r"tcl|cfm|sh|mp3|m?db|wdm|nlm|stm)|.*/(?:f?cgi[-a-z]+|soap)).*)"),
    "attacks", None, None,
    ('rewrite', 1,
     (re.compile(r"(/phpMyAdmin)-[-0-9a-z.]+"), r"\1-*"))) ]
