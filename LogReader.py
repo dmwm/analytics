@@ -539,6 +539,8 @@ class LogAggregator(Process):
     self.rx = analyser.rx
     self.parser = analyser.parser
     self.qresolver = Queue()
+    self.completed_parse = Queue()
+    self.completed_all = Queue()
     self.resolver = LogResolver(self.ip2i, self.qresolver)
 
   def run(self):
@@ -572,6 +574,9 @@ class LogAggregator(Process):
     for key in sorted(resstat.keys()):
       status, name = key
       debug("LOGREADER", 1, " %7d %s (%s)", resstat[key], name, status)
+
+    # Tell master we finished
+    self.completed_all.put(None)
 
   def _parse(self):
     # Start resolver.
@@ -617,6 +622,10 @@ class LogAggregator(Process):
             "merged stats from process #%d, %d stats in %d timebins: %s",
             procid, nsvcs, len(result), " ".join(sorted(result.keys())))
 
+    # Tell master we finished parse so it can start another aggregator.
+    self.completed_parse.put(None)
+
+    # Return stats.
     return stats
 
   def _resolve(self, stats):
@@ -1111,6 +1120,7 @@ class LogAnalyser:
     # a list of log files we used for that months results, and compare
     # to the list we have saved (if any). Reprocess the month if the
     # the two lists aren't identical and the month isn't frozen.
+    aggregators = []
     for month in sorted(months.keys(), reverse=True):
       lim = months[month]
       logs = monthly_logs[month]
@@ -1127,7 +1137,20 @@ class LogAnalyser:
       except EnvironmentError:
         oldstamp = None
 
+      # Start the aggregator, and wait it to finish parsing.
       if mystamp != oldstamp and not os.path.exists(dbfrozen):
         agg = LogAggregator(self, lim, logs, statfile, dbfile, mystamp)
         agg.start()
-        agg.join()
+        agg.completed_parse.get()
+        aggregators.append(agg)
+
+      # Reap any aggregators which have finished.
+      i = 0
+      while i < len(aggregators):
+        if not aggregators[i].completed_all.empty():
+          aggregators.pop(i).join()
+        else:
+          i += 1
+
+    # Wait all remaining aggregators to exit.
+    map(lambda agg: agg.join(), aggregators)
