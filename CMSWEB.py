@@ -224,6 +224,10 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     else:
       key = StatsKey("attacks", "N/A", "N/A", uri)
 
+    # Skip all but first leading slash, web server has similar behaviour.
+    while uribeg+1 < uriend and uri[uribeg] == '/' and uri[uribeg+1] == '/':
+      uribeg += 1
+
     # Resolve log time.
     #
     # The strptime() version is twice as slow, so do it by hand.
