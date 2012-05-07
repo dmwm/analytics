@@ -1,0 +1,223 @@
+#!/usr/bin/perl -w
+
+use strict;
+use List::Util qw(min max sum reduce);
+my %months = ( Jan => "01", Feb => "02", Mar => "03",
+               Apr => "04", May => "05", Jun => "06",
+               Jul => "07", Aug => "08", Sep => "09",
+               Oct => "10", Nov => "11", Dec => "12");
+my @minsvc = qw(cms_dbs_prod_global);
+
+# Check command line arguments.
+die "usage: $0 SUMMARY-DIR LOG-DIR...\n" if ! scalar @ARGV;
+die "$ARGV[0]: No such directory\n" if ! -d $ARGV[0] || ! -w $ARGV[0];
+my $statdir = shift(@ARGV);
+
+# Remaining @ARGV are directories to look for monthly log archive zip
+# files. For any given month there are several log archives, one per
+# host. We determine which monthly stats files require updating by
+# comparing the time stamps of the zip and the stats file; when we
+# update a stats file, we record the archive file time stamp.
+#
+# When updating the stats file, we rely on the server rotating logs
+# on UTC date change, and generate the stats for this time period.
+# In other words, we assume access_log file per day to report, and
+# do not use the dates from the HTTP logs themselves, as they are in
+# local time and subject to daylight savings variations.
+
+# First locate monthly log archives.
+my %logs = ();
+foreach (map { <$_/access_log_*.zip> } @ARGV)
+{
+  (-f $_ && -r $_) or next;
+  /access_log_(\d{6})\.zip$/ or next;
+  push(@{$logs{$1}}, [ $_, (stat($_))[7], int((stat($_))[9]) ]);
+}
+
+# Process those months whose stats file needs updating.
+foreach my $m (sort { $b cmp $a } keys %logs)
+{
+  my $ok = 0;
+  my $lfiles = $logs{$m};
+  my $sfile = "$statdir/stats-$m.txt";
+  my $dfile = "$statdir/stats-$m.db";
+  my %stamps = ();
+
+  # Check the stats file is in place, and its accompanying database
+  # identifies exactly the same file we are looking at now, and for
+  # each of those files the time stamp and size match database.
+  if (-f $sfile && -r $sfile && open(D, "< $dfile"))
+  {
+    while (<D>)
+    {
+      /^(\d+) (\d+) (.*)$/ or next;
+      $stamps{$3} = [int($1), int($2)];
+    }
+    close(D);
+
+    my $o = join " ", map { join(":", @$_) } sort { $$a[0] cmp $$b[0] } @$lfiles;
+    my $n = join " ", map { "$_:$stamps{$_}[0]:$stamps{$_}[1]" } sort keys %stamps;
+    $ok = ($o eq $n);
+  }
+
+  # Generate the statistics.
+  if (! $ok)
+  {
+    my $stats = &process($m, $lfiles, $sfile, $dfile) if ! $ok;
+
+    # Save the output and refresh the database file.
+    open(S, "> $sfile") || die "$sfile: $!\n";
+    print S $stats;
+    close(S) || die "$sfile: $!\n";
+
+    open(D, "> $dfile") || die "$dfile: $!\n";
+    print D map { "$$_[1] $$_[2] $$_[0]\n" } @$lfiles;
+    close(D) || die "$dfile: $!\n";
+  }
+}
+
+# Generate a stats file.  Scan each zip file to determine the daily
+# individual log archive files, and generate the corresponding stats.
+# Return a single string of the complete daily stats for the month.
+sub process
+{
+  my ($m, $lfiles, $sfile, $dfile) = @_;
+  my ($svcs, $allstats) = ({}, {});
+  map { $$svcs{$_} = 1 } "ALL", @minsvc;
+
+  # Figure out all per-day files we have, so we can gather complete
+  # stats for each day before proceding to the next day.
+  my %perday = ();
+  foreach my $a (@$lfiles)
+  {
+    open(L, "unzip -qqv $$a[0] |") || die "$a: cannot index: $!\n";
+    while (<L>)
+    {
+      /.* (localhost_access_log.(\d{4})-(\d\d)-(\d\d).txt)$/ or next;
+      push(@{$perday{"$2-$3-$4"}}, [ $$a[0], $1 ]);
+    }
+    close(L);
+  }
+
+  # Now read all those files. Do daily stats to avoid growing memory.
+  foreach my $date (sort keys %perday)
+  {
+    my ($sv, $hits, $time, $timing) = ({}, {}, {}, {});
+    foreach $a (@{$perday{$date}})
+    {
+      open(A, "unzip -p $$a[0] $$a[1] |")
+	|| die "$$a[0]: $$a[1]: cannot read: $!\n";
+      &slurp($sv, $hits, $time, $timing);
+      close(A);
+    }
+
+    $$timing{ALL} ||= [];
+    $$hits{ALL} = ($$hits{ALL} || 0) + sum(values %$hits);
+    $$time{ALL} = ($$time{ALL} || 0) + sum(values %$time);
+    push(@{$$timing{ALL}}, @$_) for values %$timing;
+
+    foreach my $svc ("ALL", keys %$sv)
+    {
+      my ($usecs, $avg, $rms);
+      $$svcs{$svc} = 1;
+      $avg = $rms = 0;
+      $usecs = $$time{$svc};
+      $avg = $usecs / $$hits{$svc} if $usecs && $$hits{$svc};
+      $rms = sqrt((reduce{ $a+($b-$avg)**2 } ($avg, @{$$timing{$svc}}))
+		  / ($$hits{$svc}-1))
+        if $$hits{$svc} > 1;
+
+      $$allstats{$date}{$svc} = {
+	hits => $$hits{$svc}, avg => $avg, rms => $rms,
+	min => min(@{$$timing{$svc}}),
+	max => max(@{$$timing{$svc}})
+      };
+    }
+  }
+
+  # Start building result. First header line.
+  my @svcnames = sort keys %$svcs;
+  my @titles = qw(Requests Avg RMS Min Max);
+  my $result = join "", sprintf("%-11s", " "),
+    (map {sprintf "%-57s", "  $_" . substr("_" x 56,length($_)+2)} @svcnames),
+    "\n";
+  $result .= join "", sprintf("%-10s", "Date"),
+    (map {sprintf " %10s %10s %10s %10s %12s", @titles} @svcnames),
+    "\n";
+
+  # Now add daily stats per service.
+  foreach my $day (sort keys %$allstats)
+  {
+    $result .= sprintf "%-10s", $day;
+    foreach my $svc (@svcnames)
+    {
+      if ($$allstats{$day} && $$allstats{$day}{$svc})
+      {
+        $result .= sprintf " %10d %10d %10d %10d %12d",
+		           $$allstats{$day}{$svc}{hits},
+			   $$allstats{$day}{$svc}{avg},
+			   $$allstats{$day}{$svc}{rms},
+			   $$allstats{$day}{$svc}{min},
+			   $$allstats{$day}{$svc}{max};
+      }
+      else
+      {
+        $result .= sprintf " %10d %10d %10d %10d %12d", 0, 0, 0, 0, 0;
+      }
+    }
+    $result .= "\n";
+  }
+
+  return $result;
+}
+
+# Read a log file.
+sub slurp
+{
+  my ($svcs, $hits, $time, $timing) = @_;
+  while (<A>)
+  {
+    m{"(GET|HEAD|POST) /([^/? ]*)[/? ].* (\d+)$} or next;
+    my $us = int($3);
+    my $svc = $2;
+    if ($svc =~ /^cms_dbs_([a-z0-9_]+)$/) {
+      $svc = lc($1);
+    } else {
+      $svc = "z-other";
+    }
+
+    $$svcs{$svc} = 1;
+    $$hits{$svc}++;
+    $$time{$svc} += $us;
+    push(@{$$timing{$svc}}, $us);
+  }
+}
+
+__END__
+      
+    
+
+  foreach my $fname (<$dir/access_log_[0-9][0-9][0-9][0-9][0-9][0-9].zip>)
+  {
+    $m = ($fname =~ /access_log_(\d{4})\.zip$/)[0];
+    push(@{$logs{$m}}, $fname);
+  # Skip non-existent argument files.
+  next if ! -f $fname;
+  $base = ($fname =~ m|([^/.]+(\.[a-z]+)$|)[0];
+  if 
+    
+ END {
+  printf "%-11s", " "; print map { sprintf("%-47s", $_ . substr("_" x 46, length($_))) } sort keys %S; print "\n";
+  printf "%-10s", "Date"; print map { sprintf(" %8s %8s %8s %8s %10s", "Requests", "Avg", "RMS", "Min", "Max") } keys %S; print "\n";
+  foreach $day (sort { $b cmp $a } keys %d) {
+   printf "%-10s", $day;
+   foreach $svc (sort keys %S) {
+     $S=sum(@{$us{$day}{$svc}});
+     $A=($S && $d{$day}{$svc} ? $S/$d{$day}{$svc} : 0);
+     $SS=($d{$day}{$svc} > 1 ? sqrt((reduce{$a + ($b-$A)**2} ($A, @{$us{$day}{$svc}}))/($d{$day}{$svc}-1)) : 0);
+     printf " %8d %8d %8d %8d %10d", $d{$day}{$svc}, $A, $SS, min(@{$us{$day}{$svc}}), max(@{$us{$day}{$svc}});
+   }
+   print "\n";
+  }
+ }' > stats.txt &
+
