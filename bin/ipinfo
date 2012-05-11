@@ -1,0 +1,239 @@
+#!/usr/bin/env perl
+
+BEGIN {
+  use strict;
+  use warnings;
+  $^W = 1;
+}
+
+use open qw/:std :utf8/;
+use Net::IP;
+use Net::DNS;
+use Net::CIDR qw/addr2cidr/;
+use Geo::IP;
+use YAML::XS;
+
+# IANA reserved CIDR blocks.
+my @reserved = map { new Net::IP($_) }
+  qw{0/8 10/8 127/8 169.254/16 172.16/12 192.168/16};
+
+# Null GeoIP info object, used when we find nothing.
+my %NULL_GEOIP = map { $_ => undef }
+  qw{CC COUNTRY CONTINENT REGION CITY LAT LONG};
+
+# Create DNS resolver with 30-second timeout.
+my $r = new Net::DNS::Resolver;
+$r->tcp_timeout(30);
+$r->udp_timeout(30);
+
+# Open GeoIP city database.
+my $gip = Geo::IP->open("$ENV{HOME}/Downloads/GeoLiteCity.dat",
+			GEOIP_STANDARD
+			| GEOIP_MEMORY_CACHE
+			| GEOIP_CHECK_CACHE);
+
+# Read the public suffix list.
+my $psl = do {
+  local $/;
+  open(F, "< $ENV{HOME}/Downloads/psl.yml") || die;
+  my $data = <F>;
+  close(F);
+  Load($data);
+};
+
+# Check if an IP address is in any reserved CIDR block.
+# If so return the block, otherwise undef.
+sub is_reserved($@)
+{
+  my ($ip, @reserved) = @_;
+  foreach my $res (@reserved)
+  {
+    return $res if $res->overlaps($ip) == $IP_B_IN_A_OVERLAP;
+  }
+
+  return undef;
+}
+
+# Look up network ASN by reversed IP address. Uses routeviews.org
+# or cymru.com reverse mapping DNS servers to perform look-ups.
+# Returns tuple of ASN string, CIDR prefix/width string and country
+# code. The values are undef if the information cannot be found.
+sub asn_lookup($$)
+{
+  my ($r, $revip) = @_;
+  my ($q, $asn, $cidr, $w, $cc);
+
+  # First try looking up ASN and CIDR via routeviews.org
+  if (($q = $r->query("$revip.asn.routeviews.org", "TXT"))
+      && $q->answer
+      && scalar(($q->answer)[0]->char_str_list) == 3)
+  {
+    ($asn, $cidr, $w) = ($q->answer)[0]->char_str_list;
+    $cidr = new Net::IP("$cidr/$w");
+  }
+
+  # Try cymru.com mapping to ASN and CIDR next.
+  elsif (($q = $r->query("$revip.origin.asn.cymru.com", "TXT"))
+         && $q->answer
+         && scalar(($q->answer)[0]->char_str_list) == 1
+         && (($q->answer)[0]->char_str_list)[0] =~ m{^(\d+) \| (\S+)/(\d+) \| })
+  {
+    $asn = $1;
+    $cidr = new Net::IP("$2/$3");
+  }
+
+  # Lookup country code from cymru.com.
+  if (defined $asn
+      && ($q = $r->query("as$asn.asn.cymru.com", "TXT"))
+      && $q->answer
+      && scalar(($q->answer)[0]->char_str_list) == 1
+      && (($q->answer)[0]->char_str_list)[0] =~ m{^\d+ \| (\S+) \| })
+  {
+    $cc = $1;
+  }
+
+  return ($asn, $cidr, $cc);
+}
+
+# Lookup host name in public suffix list to determine domain part.
+# Returns the domain part of the host name.
+sub domain_of($$)
+{
+  my ($psl, $name) = @_;
+  my @d = reverse split /\./, $name;
+  my @domain;
+
+  for (my ($x, $insuffix) = ($psl, 1); @d; )
+  {
+    my $p = shift(@d);
+    push(@domain, $p) if $insuffix;
+    if (exists $$x{$p} && ref $$x{$p})
+    {
+      $x = $$x{$p};
+    }
+    elsif (exists $$x{$p})
+    {
+      $insuffix = ! $$x{$p};
+      $x = {};
+    }
+    elsif (exists $$x{"*"})
+    {
+      $insuffix = ! $$x{$p};
+      $x = {};
+    }
+    else
+    {
+      last;
+    }
+  }
+
+  return join ".", reverse @domain;
+}
+
+# Determine information about an IP address.
+sub ip_addr_info($)
+{
+  my ($ipaddr) = @_;
+  my $ip = new Net::IP($ipaddr);
+  my ($revip) = ($ip->reverse_ip =~ /^(.*)\.in-addr\.arpa\.$/);
+  my ($name, $altname, $asn, $cc, $domain, $q);
+  my $cidr = $ip;
+
+  # Bypass lookups for known IANA reserved blocks.
+  if (my $resv = is_reserved($ip, @reserved))
+  {
+    $cidr = $resv;
+    $domain = $resv->short . "/" . $resv->prefixlen;
+    $asn = "RESERVED";
+    $cc = "--";
+  }
+  else
+  {
+    # Lookup ASN, CIDR block and country code.
+    ($asn, $cidr, $cc) = asn_lookup($r, $revip);
+
+    # If we can reverse lookup the IP address, use the resulting name.
+    if (($q = $r->query($ip->ip, "PTR")) && $q->answer)
+    {
+      $name = (grep($_->type eq "PTR", $q->answer))[0]->ptrdname;
+    }
+
+    # Try PTR on CIDR base address if there was no PTR for address itself.
+    elsif (defined $cidr)
+    {
+      # Try first the CIDR base address.
+      if (($q = $r->query($cidr->ip, "PTR")) && $q->answer)
+      {
+        $altname = ($q->answer)[0]->ptrdname;
+      }
+
+      # Otherwise try some addresses in the CIDR block.  If the CIDR is
+      # narrower than /18, scan it entirely, otherwise scan /24 part.
+      # Use as name anything that we manage to look up.
+      else
+      {
+	my $now = time();
+	my $w = "/" . ($cidr->prefixlen > 18 ? $cidr->prefixlen : 24);
+	my $addr = new Net::IP((grep(m{$w$}, addr2cidr($ip->ip)))[0]);
+        do
+        {
+          if (($q = $r->query($addr->ip, "PTR")) && $q->answer)
+          {
+            $altname = ($q->answer)[0]->ptrdname;
+	  }
+	} while (! defined $altname && ++$addr && time() - $now < 60);
+      }
+    }
+  }
+
+  # If we have a name, look up domain part in public suffix list.
+  if (defined $name)
+  {
+    $name = lc $name;
+    $domain = domain_of($psl, $name) if ! defined $domain;
+  }
+  elsif (defined $altname)
+  {
+    $altname = lc $altname;
+    $domain = domain_of($psl, $altname) if ! defined $domain;
+  }
+  elsif (defined $asn && ! defined $domain)
+  {
+    $domain = "#AS$asn";
+  }
+
+  $name = $ip->ip if ! defined $name;
+  $domain = "<unknown>" if ! defined $domain;
+  $altname = '' if ! defined $altname;
+  $asn = '' if ! defined $asn;
+  $cidr = $ip if ! defined $cidr;
+  $cc = '' if ! defined $cc;
+
+  # Look up GeoIP info
+  my $gr = \%NULL_GEOIP;
+  if (my $grip = $gip->record_by_addr($ip->ip))
+  {
+    $gr = { CC => $grip->country_code, COUNTRY => $grip->country_name,
+            CONTINENT => $grip->continent_code, REGION => $grip->region_name,
+	    CITY => $grip->city, LAT => $grip->latitude, LONG => $grip->longitude };
+  }
+
+  # Return result object.
+  return { IPADDR => $ip->ip, GEOIP => $gr,
+	   ASN => { CIDR => $cidr->prefix, NUM => $asn, CC => $cc },
+	   NAME => { DOMAIN => $domain, HOST => $name, ALT => $altname } };
+}
+
+
+while (@ARGV)
+{
+  my $i = ip_addr_info(shift @ARGV);
+  printf "%-20s %-30s %-6s %-25s %-14s %s %s\n",
+    "ip=$$i{IPADDR}",
+    "asn=$$i{ASN}{CC}:$$i{ASN}{NUM}:$$i{ASN}{CIDR}",
+    "cc=" . join("", grep(defined && $_ ne '', $$i{GEOIP}{CC})),
+    "domain=$$i{NAME}{DOMAIN}",
+    "pos=" .  join(",", map { sprintf "%.4f", $_ } grep(defined && $_ ne '', $$i{GEOIP}{LAT}, $$i{GEOIP}{LONG})),
+    "name=$$i{NAME}{HOST} altname=$$i{NAME}{ALT}",
+    "loc=" . join(", ", grep(defined && $_ ne '', $$i{GEOIP}{COUNTRY}, $$i{GEOIP}{REGION}, $$i{GEOIP}{CITY}));
+}
