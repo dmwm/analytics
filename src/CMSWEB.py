@@ -210,14 +210,11 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     # Some attacks feed complete junk, so auto-classlify as attack
     # if it doesn't look like a valid HTTP request.
     key = None
-    uribeg = 0
-    uriend = len(uri)
-    uripart = uri.find(" ")
-    method = uri[0:uripart]
+    method = uri.split(" ")[0]
     if not method.isupper():
       key = StatsKey("attacks", "N/A", "N/A", uri)
-    else:
-      uribeg = uripart+1
+    uribeg = uri.find(" ")+1
+    uriend = len(uri)
 
     # Remove trailing " HTTP/n.m" from the URI. Some attacks make
     # malformed requests without the required HTTP/n.m part. Making
