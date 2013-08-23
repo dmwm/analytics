@@ -320,7 +320,7 @@ def cmsweb_parser(rows, qresolver, start_time, end_time, time_format):
     if usecs < 0: usecs = -usecs
 
     # Convert proxies to real users.
-    user = user.replace("/CN=proxy", "")
+    user = re.sub(r"(/CN=(\d+|(limited )?proxy))+$", "", user)
 
     # Tick the stats.
     stats[timebin][key].tick(float(bytes) / 1024, usecs,
