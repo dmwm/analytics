@@ -82,6 +82,21 @@ The first regexp to match the URI will be used to map the URI to a
 The vast majority of the log parsing is spent in the regexp matches
 so it's important to avoid costly constructs, especially with lots
 of backtracking and unnecessary match groups.
+
+ATTENTION: it is extremely important to keep these regexps up-to-date.
+In particular, they must properly catch the URI entries where the input to
+an API call is part of the URL itself (not a query string argument).
+This is the case, for instance, when accessing a couch document by its ID
+(i.e /couchdb/dbname/docid), or providing the workflow name in many reqmgr1
+API calls. Failing to catch those will potentially make the number of StatKeys
+to sky rocket since each different input in these URIs will be identified as a
+different API. This causes critical issues to keep the detailed stats in
+memory, and eventually it starts to swap until the machine dies and the script
+never finishes. Each parsing process normally uses <200 MBs of RES memory. If
+significant more memory use is observed while running it, that's a sign
+these rules need to be update. You can identify the offending APIs by
+looking into the strings in the end of the produced daily stat files, or
+digging those directly on the server logs.
 """
 URI2SVC = [
   (re.compile(r"(/dqm)(/[^/]+)($|/[^?&]*)"),
@@ -111,8 +126,23 @@ URI2SVC = [
    ('rewrite', 4,
     (re.compile(r"^/[^/]+\.[a-z]+$"), "/*.*"))),
 
+  (re.compile(r"(/couchdb)(/[^/_][^/]+)($|/[^?&]*)"),
+   1, 2, None,
+   ('rewrite', 3,
+    (re.compile(r"^/[^/_][^/]+($|/.*)"), r"/DOCID\1"))),
+
+  (re.compile(r"(/couchdb)($|/[^?&]*)"),
+   1, None, None, 2),
+
+  (re.compile(r"(/reqmgr[2]?)($|/[^?&]*)"),
+   1, None, None,
+   ('rewrite', 2,
+    (re.compile(r"^(/(:?rest|reqMgr|data)/[^/]+/).*"), r"\1NAME"))),
+
   (re.compile(r"((/(?:auth|base|conddb|crabconf|prod-?mon|prodrequest"
-              r"|couchdb|das|dbs(?:_discovery)?|filemover|sitedb|reqmgr"
+              r"|das|dbs(?:_discovery)?|filemover|sitedb|wmstats|workloadsummary"
+              r"|tier0_wmstats|t0_workloadsummary|acdcserver|crabcache"
+              r"|crabserver|gitweb|dmwmmon"
               r"|T0Mon|tier0|workqueue))(?:[-a-z0-9_]*))($|/[^?&]*)"),
    ('rewrite', 2, (re.compile(r"/prod[-a-z]+"), "/prodtools")),
    1, None,
