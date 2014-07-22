@@ -126,23 +126,27 @@ URI2SVC = [
    ('rewrite', 4,
     (re.compile(r"^/[^/]+\.[a-z]+$"), "/*.*"))),
 
-  (re.compile(r"(/couchdb)(/[^/_][^/]+)($|/[^?&]*)"),
+  # /couchdb/dbname/something
+  (re.compile(r"(/[c]?couchdb[2]?)(/[^/_][^/]+)($|/[^?&]*)"),
    1, 2, None,
    ('rewrite', 3,
-    (re.compile(r"^/[^/_][^/]+($|/.*)"), r"/DOCID\1"))),
+    (re.compile(r"^/[^/_][^/]+($|/.*)"), r"/DOCID[/SOMETHING]"),
+    (re.compile(r"^/_local/.+"), r"/_local/DOCID"),
+    (re.compile(r"^(/_design/[^/]+/_[^/]+/[^/]+)/.+"), r"\1/DOCID"))),
 
-  (re.compile(r"(/couchdb)($|/[^?&]*)"),
+  # everything else is the main couch apis and futon
+  (re.compile(r"(/[c]?couchdb[2]?)($|/[^?&]*)"),
    1, None, None, 2),
 
   (re.compile(r"(/reqmgr[2]?)($|/[^?&]*)"),
    1, None, None,
    ('rewrite', 2,
-    (re.compile(r"^(/(:?rest|reqMgr|data)/[^/]+/).*"), r"\1NAME"))),
+    (re.compile(r"^(/(:?rest|reqMgr|data|view)/[^/]+/).*"), r"\1NAME"))),
 
   (re.compile(r"((/(?:auth|base|conddb|crabconf|prod-?mon|prodrequest"
               r"|das|dbs(?:_discovery)?|filemover|sitedb|wmstats|workloadsummary"
               r"|tier0_wmstats|t0_workloadsummary|acdcserver|crabcache"
-              r"|crabserver|gitweb|dmwmmon"
+              r"|crabserver|gitweb|dmwmmon|aso-monitor"
               r"|T0Mon|tier0|workqueue))(?:[-a-z0-9_]*))($|/[^?&]*)"),
    ('rewrite', 2, (re.compile(r"/prod[-a-z]+"), "/prodtools")),
    1, None,
